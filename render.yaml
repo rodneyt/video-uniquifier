@@ -54,11 +54,11 @@ services:
 
   - type: redis
     name: redis
-    plan: starter
+    plan: free
     ipAllowList: []
 
 databases:
   - name: postgres
-    plan: starter
+    plan: free
     databaseName: videouniquifier
     user: videouser
