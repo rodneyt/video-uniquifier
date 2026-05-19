@@ -194,12 +194,14 @@ def process_video(input_path: str, output_path: str) -> dict:
         output_path
     ]
     
-    print(f"Ejecutando FFmpeg: {' '.join(cmd)}")
+    print(f"Ejecutando FFmpeg: {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
     if result.returncode != 0:
-        print("FFmpeg error:", result.stderr)
+        print(f"FFmpeg error: {result.stderr[-500:]}", flush=True)
         raise Exception(f"FFmpeg falló con código {result.returncode}")
+    else:
+        print("FFmpeg completado exitosamente.", flush=True)
 
     return params
 
