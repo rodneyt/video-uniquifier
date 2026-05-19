@@ -1,6 +1,9 @@
 # Dockerfile combinado: API + Worker + FFmpeg en un solo servicio
 FROM python:3.12-slim
 
+# Force Python to print logs immediately (no buffering)
+ENV PYTHONUNBUFFERED=1
+
 # Instalar FFmpeg, Tesseract y dependencias del sistema
 RUN apt-get update && apt-get install -y \
     ffmpeg \
@@ -29,5 +32,5 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 EXPOSE 8000
 
-# Supervisord arranca ambos procesos
-CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Seed the database on startup, then run supervisord
+CMD python seed.py && supervisord -c /etc/supervisor/conf.d/supervisord.conf

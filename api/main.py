@@ -174,3 +174,32 @@ def delete_job(job_id: str, current_user: User = Depends(get_current_user), db: 
     db.delete(job)
     db.commit()
     return {"detail": "Job deleted"}
+
+@app.get("/health")
+def health_check():
+    """Health check - also shows worker status"""
+    try:
+        worker_count = len(redis_conn.smembers("rq:workers"))
+        queue_size = q.count
+        return {
+            "status": "ok",
+            "workers": worker_count,
+            "queue_size": queue_size
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+@app.post("/admin/cleanup")
+def cleanup_stuck_jobs(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Reset stuck processing/queued jobs to failed"""
+    stuck = db.query(Job).filter(
+        Job.user_id == current_user.id,
+        Job.status.in_(["processing", "queued"])
+    ).all()
+    count = 0
+    for job in stuck:
+        job.status = "failed"
+        job.error = "Reset: job was stuck"
+        count += 1
+    db.commit()
+    return {"detail": f"Reset {count} stuck jobs"}
