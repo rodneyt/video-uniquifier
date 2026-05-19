@@ -256,3 +256,46 @@ def worker_update_job(
     
     db.commit()
     return {"detail": f"Job {job_id} updated to {update.status}"}
+
+@app.get("/worker/download-url/{job_id}")
+def worker_get_download_url(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get presigned download URL for a job's input video."""
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    try:
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': R2_BUCKET, 'Key': job.input_key},
+            ExpiresIn=3600
+        )
+        return {"download_url": url, "input_key": job.input_key}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/worker/upload-url/{job_id}")
+def worker_get_upload_url(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get presigned upload URL for a job's output video."""
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    output_key = f"outputs/{job_id}.mp4"
+    try:
+        url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': R2_BUCKET, 'Key': output_key, 'ContentType': 'video/mp4'},
+            ExpiresIn=3600
+        )
+        return {"upload_url": url, "output_key": output_key}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
