@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: videouser
+      POSTGRES_PASSWORD: videopassword
+      POSTGRES_DB: videouniquifier
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopassword@postgres:5432/videouniquifier
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET=supersecretjwt
+      - R2_ACCESS_KEY=dummy
+      - R2_SECRET=dummy
+      - R2_BUCKET=dummy
+      - R2_ENDPOINT=http://minio:9000
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./api:/app/api
+      - ./shared:/app/shared
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://videouser:videopassword@postgres:5432/videouniquifier
+      - REDIS_URL=redis://redis:6379/0
+      - R2_ACCESS_KEY=dummy
+      - R2_SECRET=dummy
+      - R2_BUCKET=dummy
+      - R2_ENDPOINT=http://minio:9000
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./worker:/app/worker
+      - ./shared:/app/shared
+      - ./assets:/app/assets
+
+volumes:
+  postgres_data:
