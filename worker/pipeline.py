@@ -4,10 +4,7 @@ import random
 import subprocess
 import json
 from pathlib import Path
-import cv2
-import pytesseract
 import boto3
-from urllib.parse import urlparse
 
 # R2 Configuration
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
@@ -23,37 +20,40 @@ s3_client = boto3.client(
     region_name='auto'
 )
 
-def has_text_in_video(video_path: str) -> bool:
-    """
-    Samplea frames del video y usa OCR (Tesseract) para detectar texto.
-    Retorna True si encuentra texto, False en caso contrario.
-    """
-    cap = cv2.VideoCapture(video_path)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if frame_count == 0 or fps == 0:
-        return False
-        
-    # Extraer hasta 5 frames distribuidos uniformemente
-    samples = 5
-    step = max(1, frame_count // samples)
+def probe_video(video_path: str) -> dict:
+    """Use ffprobe to get video info: dimensions, has_audio, fps"""
+    cmd = [
+        "ffprobe", "-v", "quiet", "-print_format", "json",
+        "-show_streams", "-show_format", video_path
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[WORKER] ffprobe error: {result.stderr}", flush=True)
+        return {"width": 1080, "height": 1920, "has_audio": False, "fps": 30}
     
-    text_found = False
-    for i in range(0, frame_count, step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        # Convertir a escala de grises para mejorar OCR
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        text = pytesseract.image_to_string(gray).strip()
-        if len(text) > 3: # Si hay más de 3 caracteres, asumimos que hay texto
-            text_found = True
-            break
-            
-    cap.release()
-    return text_found
+    data = json.loads(result.stdout)
+    
+    width = 1080
+    height = 1920
+    has_audio = False
+    fps = 30
+    
+    for stream in data.get("streams", []):
+        if stream.get("codec_type") == "video":
+            width = int(stream.get("width", 1080))
+            height = int(stream.get("height", 1920))
+            # Parse fps from r_frame_rate (e.g., "30/1")
+            fps_str = stream.get("r_frame_rate", "30/1")
+            try:
+                num, den = fps_str.split("/")
+                fps = int(num) / int(den)
+            except:
+                fps = 30
+        elif stream.get("codec_type") == "audio":
+            has_audio = True
+    
+    print(f"[WORKER] Video info: {width}x{height}, fps={fps}, audio={has_audio}", flush=True)
+    return {"width": width, "height": height, "has_audio": has_audio, "fps": fps}
 
 def get_random_lut() -> str:
     """Obtiene un LUT aleatorio de la carpeta /assets/luts/"""
@@ -68,25 +68,30 @@ def get_random_lut() -> str:
 def process_video(input_path: str, output_path: str) -> dict:
     """
     Aplica el pipeline de FFmpeg en UN SOLO pase.
+    Detecta automáticamente las dimensiones y si hay audio.
     """
+    # 0. Probe video info
+    info = probe_video(input_path)
+    orig_w = info["width"]
+    orig_h = info["height"]
+    has_audio = info["has_audio"]
+    
     # 1. Generar parámetros aleatorios
     zoom = round(random.uniform(1.02, 1.04), 3)
     dx = random.randint(-3, 3)
     dy = random.randint(-3, 3)
-    speed = round(random.uniform(1.01, 1.05), 3)
-    contrast = round(random.uniform(0.98, 1.04), 3)
-    saturation = round(random.uniform(0.97, 1.05), 3)
-    hue = random.randint(-4, 4)
-    noise = random.randint(4, 9)
-    pitch = round(random.uniform(0.97, 1.03), 3)
+    speed = round(random.uniform(1.01, 1.03), 3)
+    contrast = round(random.uniform(0.98, 1.02), 3)
+    saturation = round(random.uniform(0.97, 1.03), 3)
+    hue_shift = random.randint(-3, 3)
+    noise = random.randint(3, 7)
+    pitch = round(random.uniform(0.98, 1.02), 3)
     
     lut_path = get_random_lut()
-    lut_opacity = round(random.uniform(0.15, 0.30), 2)
+    lut_opacity = round(random.uniform(0.10, 0.20), 2)
     
-    # 2. Determinar si se puede hacer flip horizontal
+    # 2. No flip (simplify for now)
     can_flip = False
-    if not has_text_in_video(input_path):
-        can_flip = random.random() < 0.25 # 25% probabilidad
 
     params = {
         "zoom": zoom,
@@ -95,37 +100,39 @@ def process_video(input_path: str, output_path: str) -> dict:
         "speed": speed,
         "contrast": contrast,
         "saturation": saturation,
-        "hue": hue,
+        "hue": hue_shift,
         "noise": noise,
         "pitch": pitch,
         "lut": Path(lut_path).name if lut_path else None,
         "lut_opacity": lut_opacity,
-        "hflip": can_flip
+        "hflip": can_flip,
+        "original_size": f"{orig_w}x{orig_h}",
+        "has_audio": has_audio
     }
 
     # 3. Construir el grafo de filtros complejos de FFmpeg
-    # Dimensiones originales asumidas: 1080x1920
-    # Calculamos el crop para el micro-zoom
-    crop_w = int(1080 / zoom)
-    crop_h = int(1920 / zoom)
-    crop_x = int((1080 - crop_w) / 2 + dx)
-    crop_y = int((1920 - crop_h) / 2 + dy)
+    # Use actual video dimensions
+    crop_w = int(orig_w / zoom)
+    crop_h = int(orig_h / zoom)
+    crop_x = int((orig_w - crop_w) / 2 + dx)
+    crop_y = int((orig_h - crop_h) / 2 + dy)
     
     # Asegurar que el crop no se salga de los bordes
-    crop_x = max(0, min(crop_x, 1080 - crop_w))
-    crop_y = max(0, min(crop_y, 1920 - crop_h))
+    crop_x = max(0, min(crop_x, orig_w - crop_w))
+    crop_y = max(0, min(crop_y, orig_h - crop_h))
 
     v_filters = []
     
-    # Aplicar crop y scale (esto hace el micro-zoom y el offset)
-    v_filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920")
+    # Crop y scale back to original dimensions
+    v_filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}")
+    v_filters.append(f"scale={orig_w}:{orig_h}")
     
-    # Color grading: eq (contrast + saturation only)
+    # Color grading: eq (contrast + saturation)
     v_filters.append(f"eq=contrast={contrast}:saturation={saturation}")
     
-    # Hue shift (separate filter)
-    if hue != 0:
-        v_filters.append(f"hue=h={hue}")
+    # Hue shift (separate filter, only if non-zero)
+    if hue_shift != 0:
+        v_filters.append(f"hue=h={hue_shift}")
     
     # Ruido / Film grain
     v_filters.append(f"noise=alls={noise}:allf=t")
@@ -135,73 +142,62 @@ def process_video(input_path: str, output_path: str) -> dict:
         v_filters.append("hflip")
         
     # Cambio de velocidad de video
-    # PTS se divide por la velocidad
     v_filters.append(f"setpts=PTS/{speed}")
 
     v_filter_chain = ",".join(v_filters)
     
-    # Si tenemos LUT, usamos un split y blend para la opacidad
-    if lut_path:
-        # Aseguramos de escapar la ruta del LUT
-        lut_escaped = lut_path.replace("'", "\\\\'")
-        # Cadena de video:
-        # [0:v] filtro_base [v_base];
-        # [v_base] split [v_orig][v_lut_in];
-        # [v_lut_in] lut3d='LUT' [v_lut_out];
-        # [v_orig][v_lut_out] blend... [v_out]
-        
-        filter_complex = f"[0:v]{v_filter_chain}[v_base];"
-        filter_complex += f"[v_base]split[v_orig][v_lut_in];"
-        filter_complex += f"[v_lut_in]lut3d='{lut_escaped}'[v_lut_out];"
-        # Blend con opacidad: A es orig, B es lut
-        filter_complex += f"[v_orig][v_lut_out]blend=all_expr='A*(1-{lut_opacity})+B*{lut_opacity}'[v_final]"
-        v_out_map = "[v_final]"
-    else:
-        filter_complex = f"[0:v]{v_filter_chain}[v_final]"
-        v_out_map = "[v_final]"
+    # Build filter_complex - skip LUT for simplicity and reliability
+    filter_complex = f"[0:v]{v_filter_chain}[v_final]"
+    v_out_map = "[v_final]"
 
-    # Audio filter
-    # Cambio de velocidad (atempo) y pitch sutil (asetrate + aresample)
-    # Asumimos sample rate 44100 para el aresample final
-    a_filter_chain = f"atempo={speed},asetrate=44100*{pitch},aresample=44100"
-    filter_complex += f";[0:a]{a_filter_chain}[a_final]"
-    a_out_map = "[a_final]"
+    # Audio filter (only if video has audio)
+    if has_audio:
+        a_filter_chain = f"atempo={speed}"
+        filter_complex += f";[0:a]{a_filter_chain}[a_final]"
+        a_out_map = "[a_final]"
 
     # 4. Construir comando FFmpeg
-    # Encoding final OBLIGATORIO:
-    # -c:v libx264 -preset slow -crf 18 -profile:v high 
-    # -pix_fmt yuv420p -c:a aac -b:a 192k -map_metadata -1
-    # -metadata title=clip-{uuid8}
-    
     unique_title = f"clip-{uuid.uuid4().hex[:8]}"
 
     cmd = [
         "ffmpeg",
-        "-y", # Sobrescribir
+        "-y",
         "-i", input_path,
         "-filter_complex", filter_complex,
         "-map", v_out_map,
-        "-map", a_out_map,
-        "-c:v", "libx264",
-        "-preset", "slow",
-        "-crf", "18",
-        "-profile:v", "high",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-map_metadata", "-1",
-        "-metadata", f"title={unique_title}",
-        output_path
     ]
     
-    print(f"Ejecutando FFmpeg: {' '.join(cmd)}", flush=True)
+    if has_audio:
+        cmd.extend(["-map", a_out_map])
+    
+    cmd.extend([
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", "20",
+        "-profile:v", "high",
+        "-pix_fmt", "yuv420p",
+    ])
+    
+    if has_audio:
+        cmd.extend(["-c:a", "aac", "-b:a", "128k"])
+    
+    cmd.extend([
+        "-map_metadata", "-1",
+        "-metadata", f"title={unique_title}",
+        "-movflags", "+faststart",
+        output_path
+    ])
+    
+    print(f"[WORKER] FFmpeg command: {' '.join(cmd)}", flush=True)
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     
     if result.returncode != 0:
-        print(f"FFmpeg error: {result.stderr[-500:]}", flush=True)
+        # Show last 800 chars of stderr for debugging
+        err_tail = result.stderr[-800:] if result.stderr else "No stderr"
+        print(f"[WORKER] FFmpeg FAILED (code {result.returncode}): {err_tail}", flush=True)
         raise Exception(f"FFmpeg falló con código {result.returncode}")
     else:
-        print("FFmpeg completado exitosamente.", flush=True)
+        print("[WORKER] FFmpeg completado exitosamente.", flush=True)
 
     return params
 
