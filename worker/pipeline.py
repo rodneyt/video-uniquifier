@@ -120,8 +120,12 @@ def process_video(input_path: str, output_path: str) -> dict:
     # Aplicar crop y scale (esto hace el micro-zoom y el offset)
     v_filters.append(f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale=1080:1920")
     
-    # Color grading: eq
-    v_filters.append(f"eq=contrast={contrast}:saturation={saturation}:h={hue}")
+    # Color grading: eq (contrast + saturation only)
+    v_filters.append(f"eq=contrast={contrast}:saturation={saturation}")
+    
+    # Hue shift (separate filter)
+    if hue != 0:
+        v_filters.append(f"hue=h={hue}")
     
     # Ruido / Film grain
     v_filters.append(f"noise=alls={noise}:allf=t")
