@@ -154,14 +154,31 @@ def probe_video(video_path: str) -> dict:
 
 
 def process_video(input_path: str, output_path: str) -> dict:
-    """Process video with FFmpeg using NVENC (RTX 4090)."""
+    """
+    Process video with FFmpeg using NVENC (RTX 4090).
+    
+    Anti-duplicate techniques applied:
+    1. Zoom/Crop — changes every pixel position
+    2. Speed change — alters temporal fingerprint
+    3. Color grading — contrast, saturation, hue shift
+    4. Film grain noise — random noise per frame
+    5. Invisible watermark — tiny colored dots in random corners
+    6. Color overlay — subtle RGB tint via colorbalance
+    7. Frame trimming — cuts ±2 frames from start/end
+    8. Pitch shift — alters audio frequency independently of speed
+    9. Metadata wipe — all metadata stripped and replaced
+    10. Full re-encode — bitstream is 100% unique
+    """
     info = probe_video(input_path)
     print(f"[LOCAL] Video: {info['width']}x{info['height']}, audio={info['has_audio']}")
     
     w, h = info["width"], info["height"]
+    fps = info["fps"]
     has_audio = info["has_audio"]
     
-    # Random uniquification params
+    # =========================================
+    # Generate random uniquification params
+    # =========================================
     zoom = round(random.uniform(1.02, 1.04), 3)
     dx = random.randint(-3, 3)
     dy = random.randint(-3, 3)
@@ -169,39 +186,127 @@ def process_video(input_path: str, output_path: str) -> dict:
     contrast = round(random.uniform(0.98, 1.02), 3)
     saturation = round(random.uniform(0.97, 1.03), 3)
     hue_shift = random.randint(-3, 3)
-    noise = random.randint(3, 7)
+    noise_level = random.randint(3, 7)
+    
+    # NEW: Color overlay (subtle RGB tint)
+    color_r = round(random.uniform(-0.03, 0.03), 3)   # Red shadows
+    color_g = round(random.uniform(-0.03, 0.03), 3)   # Green shadows
+    color_b = round(random.uniform(-0.03, 0.03), 3)   # Blue shadows
+    
+    # NEW: Frame trimming (cut 1-3 frames from start/end)
+    trim_start_frames = random.randint(1, 3)
+    trim_end_frames = random.randint(1, 3)
+    trim_start_sec = round(trim_start_frames / fps, 4)
+    
+    # NEW: Invisible watermark (random corner, random color)
+    wm_corner = random.choice(["tl", "tr", "bl", "br"])  # top-left, etc.
+    wm_colors = ["red", "green", "blue", "white"]
+    wm_color = random.choice(wm_colors)
+    wm_opacity = round(random.uniform(0.01, 0.03), 3)  # 1-3% opacity
+    wm_size = random.randint(1, 3)  # 1-3 pixels
+    
+    # NEW: Pitch shift (independent from speed)
+    # asetrate needs a LITERAL value, NOT an expression like 44100*0.998
+    pitch_factor = round(random.uniform(0.985, 1.015), 4)  # ±1.5% pitch
+    pitch_rate = round(44100 * pitch_factor)  # Pre-calculated literal!
     
     params = {
         "zoom": zoom, "dx": dx, "dy": dy, "speed": speed,
         "contrast": contrast, "saturation": saturation,
-        "hue": hue_shift, "noise": noise,
-        "original_size": f"{w}x{h}", "has_audio": has_audio
+        "hue": hue_shift, "noise": noise_level,
+        "color_tint": {"r": color_r, "g": color_g, "b": color_b},
+        "trim_start_frames": trim_start_frames,
+        "trim_end_frames": trim_end_frames,
+        "watermark": {"corner": wm_corner, "color": wm_color, "opacity": wm_opacity, "size": wm_size},
+        "pitch_factor": pitch_factor, "pitch_rate": pitch_rate,
+        "original_size": f"{w}x{h}", "fps": fps, "has_audio": has_audio,
     }
     
+    print(f"[LOCAL] Params: zoom={zoom} speed={speed} pitch={pitch_factor} trim={trim_start_frames}/{trim_end_frames}f")
+    print(f"[LOCAL] Color: c={contrast} s={saturation} h={hue_shift} tint=({color_r},{color_g},{color_b})")
+    print(f"[LOCAL] Watermark: {wm_corner} {wm_color}@{wm_opacity} {wm_size}px | Noise: {noise_level}")
+    
+    # =========================================
     # Build video filter chain
+    # =========================================
     crop_w = int(w / zoom)
     crop_h = int(h / zoom)
     crop_x = max(0, min(int((w - crop_w) / 2 + dx), w - crop_w))
     crop_y = max(0, min(int((h - crop_h) / 2 + dy), h - crop_h))
     
+    # Calculate watermark position
+    if wm_corner == "tl":
+        wm_x, wm_y = 0, 0
+    elif wm_corner == "tr":
+        wm_x, wm_y = w - wm_size, 0
+    elif wm_corner == "bl":
+        wm_x, wm_y = 0, h - wm_size
+    else:  # br
+        wm_x, wm_y = w - wm_size, h - wm_size
+    
     vf = [
+        # 1. Crop & Scale
         f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
         f"scale={w}:{h}",
+        # 2. Color grading
         f"eq=contrast={contrast}:saturation={saturation}",
     ]
+    
+    # 3. Hue shift
     if hue_shift != 0:
         vf.append(f"hue=h={hue_shift}")
-    vf.append(f"noise=alls={noise}:allf=t")
+    
+    # 4. Color overlay (subtle RGB tint)
+    vf.append(f"colorbalance=rs={color_r}:gs={color_g}:bs={color_b}")
+    
+    # 5. Film grain noise
+    vf.append(f"noise=alls={noise_level}:allf=t")
+    
+    # 6. Invisible watermark (tiny colored dot in corner)
+    vf.append(f"drawbox=x={wm_x}:y={wm_y}:w={wm_size}:h={wm_size}:color={wm_color}@{wm_opacity}:t=fill")
+    
+    # 7. Speed change (alters temporal fingerprint)
     vf.append(f"setpts=PTS/{speed}")
     
     fc = f"[0:v]{','.join(vf)}[v_final]"
+    
+    # =========================================
+    # Build audio filter chain
+    # =========================================
     if has_audio:
-        fc += f";[0:a]atempo={max(0.5, min(speed, 2.0)):.3f}[a_final]"
+        audio_speed = max(0.5, min(speed, 2.0))
+        # Pitch shift: asetrate with LITERAL pre-calculated value + resample back
+        # pitch_rate is already a literal integer (e.g., 43876 instead of 44100*0.995)
+        fc += f";[0:a]atempo={audio_speed:.3f},asetrate={pitch_rate},aresample=44100[a_final]"
     
     unique_title = f"clip-{uuid.uuid4().hex[:8]}"
     
+    # =========================================
     # Build FFmpeg command
-    cmd = ["ffmpeg", "-y", "-i", input_path, "-filter_complex", fc, "-map", "[v_final]"]
+    # =========================================
+    cmd = ["ffmpeg", "-y"]
+    
+    # 8. Frame trimming — skip first N frames
+    if trim_start_sec > 0:
+        cmd.extend(["-ss", f"{trim_start_sec}"])
+    
+    cmd.extend(["-i", input_path])
+    
+    # Trim end frames (cut last N frames by limiting duration)
+    # Get duration via ffprobe
+    try:
+        dur_cmd = ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", input_path]
+        dur_result = subprocess.run(dur_cmd, capture_output=True, text=True)
+        original_duration = float(dur_result.stdout.strip())
+        trim_end_sec = round(trim_end_frames / fps, 4)
+        target_duration = round(original_duration - trim_start_sec - trim_end_sec, 4)
+        if target_duration > 1:
+            cmd.extend(["-t", f"{target_duration}"])
+    except:
+        pass  # If we can't get duration, skip end trim
+    
+    cmd.extend(["-filter_complex", fc, "-map", "[v_final]"])
     if has_audio:
         cmd.extend(["-map", "[a_final]"])
     
@@ -225,13 +330,18 @@ def process_video(input_path: str, output_path: str) -> dict:
     if has_audio:
         cmd.extend(["-c:a", "aac", "-b:a", "128k"])
     
+    # 9. Metadata wipe + unique title
     cmd.extend([
         "-map_metadata", "-1",
         "-metadata", f"title={unique_title}",
+        "-metadata", f"comment={uuid.uuid4().hex}",
         "-movflags", "+faststart",
         output_path
     ])
     
+    # =========================================
+    # Execute
+    # =========================================
     encoder_name = "NVENC (GPU)" if USE_NVENC else "libx264 (CPU)"
     print(f"[LOCAL] Encoding with {encoder_name}...")
     start = time.time()
@@ -242,7 +352,17 @@ def process_video(input_path: str, output_path: str) -> dict:
         err = result.stderr[-600:] if result.stderr else "No error"
         if USE_NVENC:
             print(f"[LOCAL] NVENC failed, retrying with CPU...")
-            cmd_cpu = ["ffmpeg", "-y", "-i", input_path, "-filter_complex", fc, "-map", "[v_final]"]
+            # Rebuild with libx264
+            cmd_cpu = ["ffmpeg", "-y"]
+            if trim_start_sec > 0:
+                cmd_cpu.extend(["-ss", f"{trim_start_sec}"])
+            cmd_cpu.extend(["-i", input_path])
+            try:
+                if target_duration > 1:
+                    cmd_cpu.extend(["-t", f"{target_duration}"])
+            except:
+                pass
+            cmd_cpu.extend(["-filter_complex", fc, "-map", "[v_final]"])
             if has_audio:
                 cmd_cpu.extend(["-map", "[a_final]"])
             cmd_cpu.extend([
@@ -253,6 +373,7 @@ def process_video(input_path: str, output_path: str) -> dict:
                 cmd_cpu.extend(["-c:a", "aac", "-b:a", "128k"])
             cmd_cpu.extend([
                 "-map_metadata", "-1", "-metadata", f"title={unique_title}",
+                "-metadata", f"comment={uuid.uuid4().hex}",
                 "-movflags", "+faststart", output_path
             ])
             result = subprocess.run(cmd_cpu, capture_output=True, text=True)
