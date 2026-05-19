@@ -4,7 +4,7 @@ services:
     env: docker
     dockerContext: .
     dockerfilePath: api/Dockerfile
-    plan: starter
+    plan: free
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -31,8 +31,7 @@ services:
     env: docker
     dockerContext: .
     dockerfilePath: worker/Dockerfile
-    plan: standard
-    numInstances: 2
+    plan: free
     envVars:
       - key: DATABASE_URL
         fromDatabase:
