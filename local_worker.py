@@ -122,10 +122,11 @@ def upload_to_r2(job_id: str, file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Video Processing — Pipeline v3.0 (Particles + Simplified Core)
+# Video Processing — Pipeline v5.0 (TikTok Pro Look)
 # ---------------------------------------------------------------------------
 
-from pipeline_v2 import process_video
+from pipeline_v5 import process_video
+
 
 
 
@@ -230,7 +231,7 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"  VIDEO UNIQUIFIER - Local Worker")
-    print(f"  Pipeline: v3.0-particles")
+    print(f"  Pipeline: v5.0 — TikTok Pro Look")
     print(f"  GPU: RTX 4090 (NVENC {'ON' if USE_NVENC else 'OFF'})")
     print(f"  API: {API_URL}")
     print(f"  Poll every: {POLL_INTERVAL}s")
