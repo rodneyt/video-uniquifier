@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r /tmp/api-requirements.txt -r /tmp/worker-requi
 COPY shared/ ./shared/
 COPY api/ ./api/
 COPY worker/ ./worker/
+COPY seed.py ./seed.py
 COPY assets/ ./assets/
 
 # Configuración de supervisord para correr API y Worker juntos
