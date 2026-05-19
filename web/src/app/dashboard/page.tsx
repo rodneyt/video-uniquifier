@@ -80,13 +80,31 @@ export default function Dashboard() {
 
   const getJobDetail = async (id: string) => {
     const token = localStorage.getItem('token');
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/jobs/${id}`, {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+    const res = await fetch(`${apiUrl}/jobs/${id}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     if (res.ok) {
       const data = await res.json();
       if (data.download_url) {
-        window.open(data.download_url, '_blank');
+        // download_url is a relative path like "/jobs/{id}/download"
+        // Use fetch + blob to download with auth header
+        const dlRes = await fetch(`${apiUrl}${data.download_url}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (dlRes.ok) {
+          const blob = await dlRes.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `video-${id.slice(0, 8)}.mp4`;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          a.remove();
+        } else {
+          alert('Error descargando el video');
+        }
       }
     }
   };

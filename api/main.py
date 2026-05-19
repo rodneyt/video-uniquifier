@@ -154,16 +154,8 @@ def get_job(job_id: str, current_user: User = Depends(get_current_user), db: Ses
     }
     
     if job.status == "done" and job.output_key:
-        try:
-            presigned_url = s3_client.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': R2_BUCKET, 'Key': job.output_key},
-                ExpiresIn=3600
-            )
-            # Add dynamically
-            job_dict["download_url"] = presigned_url
-        except Exception:
-            pass
+        # Use proxy download URL (goes through Render, avoids R2 SSL issues)
+        job_dict["download_url"] = f"/jobs/{job_id}/download"
             
     return job_dict
 
@@ -176,6 +168,35 @@ def delete_job(job_id: str, current_user: User = Depends(get_current_user), db: 
     db.delete(job)
     db.commit()
     return {"detail": "Job deleted"}
+
+@app.get("/jobs/{job_id}/download")
+def download_job(job_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Stream download video from R2 through the API (proxy)."""
+    from fastapi.responses import StreamingResponse
+    
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "done" or not job.output_key:
+        raise HTTPException(status_code=400, detail="Job not ready for download")
+    
+    try:
+        r2_response = s3_client.get_object(Bucket=R2_BUCKET, Key=job.output_key)
+        
+        def stream_content():
+            for chunk in r2_response['Body'].iter_chunks(chunk_size=1024*256):
+                yield chunk
+        
+        return StreamingResponse(
+            stream_content(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="video-{job_id[:8]}.mp4"',
+                "Content-Length": str(r2_response.get('ContentLength', '')),
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 @app.get("/health")
 def health_check():
