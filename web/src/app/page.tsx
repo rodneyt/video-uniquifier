@@ -25,7 +25,7 @@ export default function Home() {
       } else {
         alert('Credenciales inválidas');
       }
-    } catch (err) {
+    } catch (_) {
       alert('Error de conexión');
     }
     setLoading(false);

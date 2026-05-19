@@ -3,8 +3,16 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 
+interface Job {
+  id: string;
+  status: string;
+  created_at: string;
+  error?: string;
+  download_url?: string;
+}
+
 export default function Dashboard() {
-  const [jobs, setJobs] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [uploading, setUploading] = useState(false);
   const router = useRouter();
 
@@ -64,7 +72,7 @@ export default function Dashboard() {
       });
 
       fetchJobs();
-    } catch (err) {
+    } catch (_) {
       alert('Error subiendo el video');
     }
     setUploading(false);
