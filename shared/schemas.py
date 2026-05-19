@@ -28,5 +28,6 @@ class JobResponse(BaseModel):
     status: str
     params_json: Optional[Any] = None
     error: Optional[str] = None
+    download_url: Optional[str] = None
     created_at: datetime
     finished_at: Optional[datetime] = None
