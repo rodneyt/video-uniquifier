@@ -203,3 +203,20 @@ def cleanup_stuck_jobs(current_user: User = Depends(get_current_user), db: Sessi
         count += 1
     db.commit()
     return {"detail": f"Reset {count} stuck jobs"}
+
+@app.post("/admin/retry-failed")
+def retry_failed_jobs(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Re-enqueue all failed jobs for reprocessing"""
+    failed = db.query(Job).filter(
+        Job.user_id == current_user.id,
+        Job.status == "failed"
+    ).all()
+    count = 0
+    for job in failed:
+        job.status = "queued"
+        job.error = None
+        job.finished_at = None
+        q.enqueue("worker.main.run_job", job.id, job_timeout='1h')
+        count += 1
+    db.commit()
+    return {"detail": f"Re-enqueued {count} failed jobs"}
