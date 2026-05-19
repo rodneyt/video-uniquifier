@@ -122,10 +122,11 @@ def upload_to_r2(job_id: str, file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Video Processing — Pipeline v2.0 (22 techniques)
+# Video Processing — Pipeline v3.0 (Particles + Simplified Core)
 # ---------------------------------------------------------------------------
 
-from pipeline_v2 import detect_available_filters, process_video
+from pipeline_v2 import process_video
+
 
 
 
@@ -229,7 +230,7 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"  VIDEO UNIQUIFIER - Local Worker")
-    print(f"  Pipeline: v2.0-spatial (22 techniques)")
+    print(f"  Pipeline: v3.0-particles")
     print(f"  GPU: RTX 4090 (NVENC {'ON' if USE_NVENC else 'OFF'})")
     print(f"  API: {API_URL}")
     print(f"  Poll every: {POLL_INTERVAL}s")
@@ -248,9 +249,6 @@ def main():
             print("[LOCAL] NVENC encoder: READY")
         else:
             print("[LOCAL] NVENC not available, will use CPU")
-    
-    # Detect available spatial filters
-    detect_available_filters()
     
     print(f"\n[LOCAL] Waiting for jobs... (Ctrl+C to stop)\n")
     
