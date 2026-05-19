@@ -1,56 +1,51 @@
 """
 Local Worker for Video Uniquifier.
-Runs on your Windows machine, connects to remote Redis/Postgres/R2.
-Uses NVIDIA NVENC (RTX 4090) for blazing fast encoding.
+Polls the Render API for pending jobs and processes them locally
+using your RTX 4090 GPU with NVIDIA NVENC encoding.
+
+NO Redis/Postgres connection needed — everything goes through the API.
 
 Usage:
-  1. Copy .env.local.example to .env.local and fill in values from Render
-  2. pip install -r worker/requirements.txt
+  1. pip install requests boto3 python-dotenv
+  2. Copy .env.local.example to .env.local and fill in values
   3. python local_worker.py
 """
 import os
 import sys
 import json
 import time
-import re
 import uuid
 import random
 import subprocess
-from datetime import datetime, timezone
+import requests
 from pathlib import Path
-
 from dotenv import load_dotenv
 
-# Load local environment
+# Load environment
 load_dotenv(".env.local")
-
-from sqlalchemy import create_engine, text
-from redis import Redis
-from rq import Queue, Worker
-import boto3
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+API_URL = os.environ.get("API_URL", "https://video-uniquifier.onrender.com")
+DEMO_EMAIL = os.environ.get("DEMO_EMAIL", "demo@example.com")
+DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "demo123")
 
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY")
 R2_SECRET = os.environ.get("R2_SECRET")
 R2_BUCKET = os.environ.get("R2_BUCKET")
 R2_ENDPOINT = os.environ.get("R2_ENDPOINT")
 
-# Use NVENC if available (RTX 4090)
 USE_NVENC = os.environ.get("USE_NVENC", "true").lower() == "true"
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))  # seconds
 
-engine = create_engine(DATABASE_URL)
-redis_conn = Redis.from_url(REDIS_URL)
-q = Queue("video_jobs", connection=redis_conn)
+# Local temp directory
+TEMP_DIR = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "video_uniquifier")
+os.makedirs(TEMP_DIR, exist_ok=True)
 
+# R2 client
+import boto3
 s3_client = boto3.client(
     's3',
     endpoint_url=R2_ENDPOINT,
@@ -59,18 +54,31 @@ s3_client = boto3.client(
     region_name='auto'
 )
 
-# Local temp directory (Windows)
-TEMP_DIR = os.path.join(os.environ.get("TEMP", "C:\\Temp"), "video_uniquifier")
-os.makedirs(TEMP_DIR, exist_ok=True)
+# Auth token
+TOKEN = None
 
-print(f"[LOCAL] Temp dir: {TEMP_DIR}")
-print(f"[LOCAL] NVENC: {'enabled' if USE_NVENC else 'disabled'}")
-print(f"[LOCAL] Redis: {REDIS_URL[:30]}...")
-print(f"[LOCAL] R2 Bucket: {R2_BUCKET}")
+
+def login():
+    """Get JWT token from API."""
+    global TOKEN
+    print(f"[LOCAL] Logging in as {DEMO_EMAIL}...")
+    resp = requests.post(f"{API_URL}/auth/login", data={
+        "username": DEMO_EMAIL,
+        "password": DEMO_PASSWORD
+    })
+    if resp.status_code != 200:
+        print(f"[LOCAL] Login failed: {resp.text}")
+        sys.exit(1)
+    TOKEN = resp.json()["access_token"]
+    print(f"[LOCAL] Logged in successfully")
+
+
+def api_headers():
+    return {"Authorization": f"Bearer {TOKEN}"}
 
 
 # ---------------------------------------------------------------------------
-# Video Probing
+# Video Processing
 # ---------------------------------------------------------------------------
 
 def probe_video(video_path: str) -> dict:
@@ -81,7 +89,6 @@ def probe_video(video_path: str) -> dict:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"[LOCAL] ffprobe error: {result.stderr[:500]}")
         return {"width": 1080, "height": 1920, "has_audio": False, "fps": 30}
     
     data = json.loads(result.stdout)
@@ -99,80 +106,71 @@ def probe_video(video_path: str) -> dict:
         elif stream.get("codec_type") == "audio":
             has_audio = True
     
-    print(f"[LOCAL] Video: {width}x{height}, fps={fps}, audio={has_audio}")
     return {"width": width, "height": height, "has_audio": has_audio, "fps": fps}
 
 
-# ---------------------------------------------------------------------------
-# Pipeline
-# ---------------------------------------------------------------------------
-
-def generate_params() -> dict:
-    """Generate random uniquification parameters."""
-    return {
-        "zoom": round(random.uniform(1.02, 1.04), 3),
-        "dx": random.randint(-3, 3),
-        "dy": random.randint(-3, 3),
-        "speed": round(random.uniform(1.01, 1.03), 3),
-        "contrast": round(random.uniform(0.98, 1.02), 3),
-        "saturation": round(random.uniform(0.97, 1.03), 3),
-        "hue": random.randint(-3, 3),
-        "noise": random.randint(3, 7),
-    }
-
-
 def process_video(input_path: str, output_path: str) -> dict:
-    """Process video with FFmpeg. Uses NVENC on RTX 4090 if available."""
+    """Process video with FFmpeg using NVENC (RTX 4090)."""
     info = probe_video(input_path)
-    params = generate_params()
+    print(f"[LOCAL] Video: {info['width']}x{info['height']}, audio={info['has_audio']}")
     
     w, h = info["width"], info["height"]
     has_audio = info["has_audio"]
     
+    # Random params
+    zoom = round(random.uniform(1.02, 1.04), 3)
+    dx = random.randint(-3, 3)
+    dy = random.randint(-3, 3)
+    speed = round(random.uniform(1.01, 1.03), 3)
+    contrast = round(random.uniform(0.98, 1.02), 3)
+    saturation = round(random.uniform(0.97, 1.03), 3)
+    hue_shift = random.randint(-3, 3)
+    noise = random.randint(3, 7)
+    
+    params = {
+        "zoom": zoom, "dx": dx, "dy": dy, "speed": speed,
+        "contrast": contrast, "saturation": saturation,
+        "hue": hue_shift, "noise": noise,
+        "original_size": f"{w}x{h}", "has_audio": has_audio
+    }
+    
     # Build video filter
-    zoom = params["zoom"]
     crop_w = int(w / zoom)
     crop_h = int(h / zoom)
-    crop_x = max(0, min(int((w - crop_w) / 2 + params["dx"]), w - crop_w))
-    crop_y = max(0, min(int((h - crop_h) / 2 + params["dy"]), h - crop_h))
+    crop_x = max(0, min(int((w - crop_w) / 2 + dx), w - crop_w))
+    crop_y = max(0, min(int((h - crop_h) / 2 + dy), h - crop_h))
     
-    vf_parts = [
+    vf = [
         f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
         f"scale={w}:{h}",
-        f"eq=contrast={params['contrast']}:saturation={params['saturation']}",
+        f"eq=contrast={contrast}:saturation={saturation}",
     ]
-    if params["hue"] != 0:
-        vf_parts.append(f"hue=h={params['hue']}")
-    vf_parts.append(f"noise=alls={params['noise']}:allf=t")
-    vf_parts.append(f"setpts=PTS/{params['speed']}")
+    if hue_shift != 0:
+        vf.append(f"hue=h={hue_shift}")
+    vf.append(f"noise=alls={noise}:allf=t")
+    vf.append(f"setpts=PTS/{speed}")
     
-    vf = ",".join(vf_parts)
-    filter_complex = f"[0:v]{vf}[v_final]"
-    
+    fc = f"[0:v]{','.join(vf)}[v_final]"
     if has_audio:
-        speed = max(0.5, min(params["speed"], 2.0))
-        filter_complex += f";[0:a]atempo={speed:.3f}[a_final]"
+        fc += f";[0:a]atempo={max(0.5, min(speed, 2.0)):.3f}[a_final]"
     
     unique_title = f"clip-{uuid.uuid4().hex[:8]}"
     
-    # Build command — NVENC for RTX 4090 or libx264 fallback
-    cmd = ["ffmpeg", "-y", "-i", input_path, "-filter_complex", filter_complex, "-map", "[v_final]"]
-    
+    cmd = ["ffmpeg", "-y", "-i", input_path, "-filter_complex", fc, "-map", "[v_final]"]
     if has_audio:
         cmd.extend(["-map", "[a_final]"])
     
     if USE_NVENC:
-        # NVIDIA NVENC — uses GPU, ~10-50x faster than CPU
         cmd.extend([
             "-c:v", "h264_nvenc",
-            "-preset", "p4",        # Good quality/speed balance
-            "-rc", "vbr",           # Variable bitrate
-            "-cq", "20",            # Quality level (lower = better)
+            "-preset", "p4",
+            "-rc", "vbr",
+            "-cq", "20",
             "-profile:v", "high",
             "-pix_fmt", "yuv420p",
         ])
+        params["encoder"] = "nvenc_rtx4090"
     else:
-        # CPU fallback
         cmd.extend([
             "-c:v", "libx264",
             "-preset", "medium",
@@ -180,6 +178,7 @@ def process_video(input_path: str, output_path: str) -> dict:
             "-profile:v", "high",
             "-pix_fmt", "yuv420p",
         ])
+        params["encoder"] = "libx264"
     
     if has_audio:
         cmd.extend(["-c:a", "aac", "-b:a", "128k"])
@@ -191,149 +190,140 @@ def process_video(input_path: str, output_path: str) -> dict:
         output_path
     ])
     
-    print(f"[LOCAL] FFmpeg {'NVENC' if USE_NVENC else 'CPU'} encoding...")
+    print(f"[LOCAL] Encoding with {'NVENC (GPU)' if USE_NVENC else 'libx264 (CPU)'}...")
     start = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True)
     elapsed = round(time.time() - start, 1)
     
     if result.returncode != 0:
-        err = result.stderr[-1000:] if result.stderr else "No stderr"
-        print(f"[LOCAL] FFmpeg FAILED ({elapsed}s): {err}")
-        
+        err = result.stderr[-800:] if result.stderr else "No error output"
         # Retry with CPU if NVENC failed
         if USE_NVENC:
-            print("[LOCAL] Retrying with CPU encoding...")
-            # Replace NVENC args with libx264
-            for i, arg in enumerate(cmd):
-                if arg == "h264_nvenc":
-                    cmd[i] = "libx264"
-                elif arg == "p4":
-                    cmd[i] = "medium"
-                elif arg == "-rc":
-                    cmd[i] = "-crf"
-                elif arg == "vbr":
-                    cmd[i] = "20"
-                elif arg == "-cq":
-                    cmd.pop(i)
-                    cmd.pop(i)  # Remove value too
-                    break
-            
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            print(f"[LOCAL] NVENC failed, retrying with CPU...")
+            # Rebuild command with libx264
+            cmd_cpu = ["ffmpeg", "-y", "-i", input_path, "-filter_complex", fc, "-map", "[v_final]"]
+            if has_audio:
+                cmd_cpu.extend(["-map", "[a_final]"])
+            cmd_cpu.extend([
+                "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                "-profile:v", "high", "-pix_fmt", "yuv420p",
+            ])
+            if has_audio:
+                cmd_cpu.extend(["-c:a", "aac", "-b:a", "128k"])
+            cmd_cpu.extend([
+                "-map_metadata", "-1", "-metadata", f"title={unique_title}",
+                "-movflags", "+faststart", output_path
+            ])
+            result = subprocess.run(cmd_cpu, capture_output=True, text=True)
             elapsed = round(time.time() - start, 1)
+            params["encoder"] = "libx264_fallback"
             if result.returncode != 0:
-                raise Exception(f"FFmpeg CPU fallback also failed: {result.stderr[-500:]}")
+                raise Exception(f"FFmpeg failed: {result.stderr[-500:]}")
         else:
-            raise Exception(f"FFmpeg failed (code {result.returncode}): {err}")
+            raise Exception(f"FFmpeg failed: {err}")
     
     out_size = os.path.getsize(output_path)
-    print(f"[LOCAL] Done in {elapsed}s — output: {out_size / 1024 / 1024:.1f} MB")
-    
-    params["original_size"] = f"{w}x{h}"
-    params["has_audio"] = has_audio
-    params["encoder"] = "nvenc" if USE_NVENC else "libx264"
+    print(f"[LOCAL] Done in {elapsed}s - output: {out_size / 1024 / 1024:.1f} MB")
     params["ffmpeg_duration_s"] = elapsed
     return params
 
 
 # ---------------------------------------------------------------------------
-# R2 Helpers
+# Job Polling & Processing
 # ---------------------------------------------------------------------------
 
-def download_from_r2(key: str, dest_path: str):
-    print(f"[LOCAL] Downloading {key} from R2...", end=" ", flush=True)
-    start = time.time()
-    s3_client.download_file(R2_BUCKET, key, dest_path)
-    size = os.path.getsize(dest_path)
-    print(f"{size / 1024 / 1024:.1f} MB in {time.time() - start:.1f}s")
-
-def upload_to_r2(file_path: str, key: str):
-    size = os.path.getsize(file_path)
-    print(f"[LOCAL] Uploading {size / 1024 / 1024:.1f} MB to R2...", end=" ", flush=True)
-    start = time.time()
-    s3_client.upload_file(file_path, R2_BUCKET, key)
-    print(f"done in {time.time() - start:.1f}s")
-
-
-# ---------------------------------------------------------------------------
-# Job Runner
-# ---------------------------------------------------------------------------
-
-def run_job(job_id: str):
-    """Main job processor — runs locally on your PC."""
-    job_start = time.time()
-    print(f"\n{'='*60}")
-    print(f"[LOCAL] Processing job {job_id}")
-    print(f"{'='*60}")
+def get_pending_jobs() -> list:
+    """Get all queued jobs from the API."""
+    resp = requests.get(f"{API_URL}/jobs", headers=api_headers())
+    if resp.status_code == 401:
+        login()  # Re-authenticate
+        resp = requests.get(f"{API_URL}/jobs", headers=api_headers())
+    if resp.status_code != 200:
+        return []
     
-    # 1. Get job from remote DB
-    with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT input_key FROM jobs WHERE id = :job_id"),
-            {"job_id": job_id}
-        ).fetchone()
-        if not result:
-            print(f"[LOCAL] Job {job_id} not found!")
-            return
-        input_key = result[0]
-        
-        conn.execute(
-            text("UPDATE jobs SET status = 'processing' WHERE id = :job_id"),
-            {"job_id": job_id}
-        )
-        conn.commit()
+    jobs = resp.json()
+    return [j for j in jobs if j["status"] == "queued"]
+
+
+def claim_job(job_id: str) -> bool:
+    """Mark job as processing via API."""
+    # We use the cleanup mechanism in reverse — set to processing directly
+    # For now, the worker processes it and the status updates happen via 
+    # direct DB updates through a special worker endpoint
+    return True
+
+
+def update_job_status(job_id: str, status: str, output_key: str = None, 
+                       params: dict = None, error: str = None):
+    """Update job status via API endpoint."""
+    resp = requests.put(
+        f"{API_URL}/worker/update-job/{job_id}",
+        headers=api_headers(),
+        json={
+            "status": status,
+            "output_key": output_key,
+            "params_json": json.dumps(params) if params else None,
+            "error": error
+        }
+    )
+    return resp.status_code == 200
+
+
+def process_job(job: dict):
+    """Process a single job."""
+    job_id = job["id"]
+    input_key = job["input_key"]
+    job_start = time.time()
+    
+    print(f"\n{'='*60}")
+    print(f"  JOB: {job_id}")
+    print(f"  Input: {input_key}")
+    print(f"{'='*60}")
     
     input_path = os.path.join(TEMP_DIR, f"in_{job_id}.mp4")
     output_path = os.path.join(TEMP_DIR, f"out_{job_id}.mp4")
     output_key = f"outputs/{job_id}.mp4"
     
+    # Mark as processing
+    update_job_status(job_id, "processing")
+    
     try:
-        # 2. Download from R2
-        download_from_r2(input_key, input_path)
+        # Download from R2
+        print(f"[LOCAL] Downloading from R2...", end=" ", flush=True)
+        dl_start = time.time()
+        s3_client.download_file(R2_BUCKET, input_key, input_path)
+        size = os.path.getsize(input_path)
+        print(f"{size / 1024 / 1024:.1f} MB in {time.time() - dl_start:.1f}s")
         
-        # 3. Process with FFmpeg (NVENC GPU!)
+        # Process with FFmpeg
         params = process_video(input_path, output_path)
         
-        # Verify output
+        # Verify
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
             raise Exception("Output file missing or empty")
         
-        # 4. Upload result to R2
-        upload_to_r2(output_path, output_key)
+        # Upload to R2
+        out_size = os.path.getsize(output_path)
+        print(f"[LOCAL] Uploading {out_size / 1024 / 1024:.1f} MB to R2...", end=" ", flush=True)
+        ul_start = time.time()
+        s3_client.upload_file(output_path, R2_BUCKET, output_key)
+        print(f"done in {time.time() - ul_start:.1f}s")
         
-        # 5. Mark done in remote DB
+        # Mark done
         total = round(time.time() - job_start, 1)
         params["total_time_s"] = total
+        update_job_status(job_id, "done", output_key=output_key, params=params)
         
-        with engine.connect() as conn:
-            conn.execute(
-                text("""
-                    UPDATE jobs SET status = 'done', output_key = :output_key,
-                    params_json = :params, finished_at = :finished_at
-                    WHERE id = :job_id
-                """),
-                {
-                    "output_key": output_key,
-                    "params": json.dumps(params),
-                    "finished_at": datetime.now(timezone.utc),
-                    "job_id": job_id
-                }
-            )
-            conn.commit()
-        
-        print(f"[LOCAL] JOB DONE in {total}s")
+        print(f"\n  >>> JOB COMPLETE in {total}s <<<")
         print(f"{'='*60}\n")
         
     except Exception as e:
         total = round(time.time() - job_start, 1)
         error_msg = str(e)[:2000]
-        print(f"[LOCAL] JOB FAILED after {total}s: {error_msg}")
-        
-        with engine.connect() as conn:
-            conn.execute(
-                text("UPDATE jobs SET status = 'failed', error = :error, finished_at = :finished_at WHERE id = :job_id"),
-                {"error": error_msg, "finished_at": datetime.now(timezone.utc), "job_id": job_id}
-            )
-            conn.commit()
+        print(f"\n  >>> JOB FAILED after {total}s: {error_msg}")
+        print(f"{'='*60}\n")
+        update_job_status(job_id, "failed", error=error_msg)
+    
     finally:
         for p in [input_path, output_path]:
             try:
@@ -344,35 +334,67 @@ def run_job(job_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Main — Start as RQ Worker
+# Main Loop
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main():
     print(f"\n{'='*60}")
-    print(f"  VIDEO UNIQUIFIER — Local Worker")
+    print(f"  VIDEO UNIQUIFIER - Local Worker")
     print(f"  GPU: RTX 4090 (NVENC {'ON' if USE_NVENC else 'OFF'})")
+    print(f"  API: {API_URL}")
     print(f"  Temp: {TEMP_DIR}")
+    print(f"  Poll interval: {POLL_INTERVAL}s")
     print(f"{'='*60}\n")
     
-    # Test connections
+    # Login
+    login()
+    
+    # Test R2 connection
     try:
-        redis_conn.ping()
-        print("[LOCAL] Redis connected")
+        s3_client.head_bucket(Bucket=R2_BUCKET)
+        print(f"[LOCAL] R2 bucket '{R2_BUCKET}' connected")
     except Exception as e:
-        print(f"[LOCAL] Redis FAILED: {e}")
+        print(f"[LOCAL] R2 connection failed: {e}")
         sys.exit(1)
     
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        print("[LOCAL] Postgres connected")
-    except Exception as e:
-        print(f"[LOCAL] Postgres FAILED: {e}")
+    # Test FFmpeg
+    result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print("[LOCAL] FFmpeg not found! Install it first.")
         sys.exit(1)
+    ffmpeg_version = result.stdout.split("\n")[0]
+    print(f"[LOCAL] {ffmpeg_version}")
     
-    print(f"[LOCAL] Queue size: {q.count} jobs waiting")
-    print(f"[LOCAL] Listening for jobs on 'video_jobs'...\n")
+    if USE_NVENC:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"], 
+            capture_output=True, text=True
+        )
+        if "h264_nvenc" in result.stdout:
+            print("[LOCAL] NVENC encoder available")
+        else:
+            print("[LOCAL] WARNING: NVENC not available, falling back to CPU")
     
-    # Start RQ worker — listens to remote Redis, processes locally
-    worker = Worker([q], connection=redis_conn, name=f"local-{os.getlogin()}")
-    worker.work(with_scheduler=False)
+    print(f"\n[LOCAL] Listening for jobs... (Ctrl+C to stop)\n")
+    
+    while True:
+        try:
+            jobs = get_pending_jobs()
+            if jobs:
+                print(f"[LOCAL] Found {len(jobs)} pending job(s)")
+                for job in jobs:
+                    process_job(job)
+            else:
+                # Silent polling
+                pass
+        except KeyboardInterrupt:
+            print("\n[LOCAL] Worker stopped.")
+            break
+        except Exception as e:
+            print(f"[LOCAL] Error: {e}")
+        
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

@@ -9,3 +9,7 @@ node_modules/
 out/
 /tmp/
 *.mp4
+
+.env.local
+__pycache__/
+*.pyc

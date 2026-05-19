@@ -13,6 +13,8 @@ from api.database import Base, engine, get_db
 from api.models import User, Job
 from api.auth import get_password_hash, verify_password, create_access_token, get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES
 from shared.schemas import UserCreate, UserResponse, Token, JobCreate, JobResponse
+from pydantic import BaseModel
+from typing import Optional
 
 # Configuración Base de datos
 Base.metadata.create_all(bind=engine)
@@ -220,3 +222,37 @@ def retry_failed_jobs(current_user: User = Depends(get_current_user), db: Sessio
         count += 1
     db.commit()
     return {"detail": f"Re-enqueued {count} failed jobs"}
+
+
+# --- WORKER ENDPOINTS (for local worker) ---
+
+class WorkerJobUpdate(BaseModel):
+    status: str
+    output_key: Optional[str] = None
+    params_json: Optional[str] = None
+    error: Optional[str] = None
+
+@app.put("/worker/update-job/{job_id}")
+def worker_update_job(
+    job_id: str, 
+    update: WorkerJobUpdate, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """Endpoint for local worker to update job status."""
+    job = db.query(Job).filter(Job.id == job_id, Job.user_id == current_user.id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job.status = update.status
+    if update.output_key:
+        job.output_key = update.output_key
+    if update.params_json:
+        job.params_json = update.params_json
+    if update.error:
+        job.error = update.error
+    if update.status in ["done", "failed"]:
+        job.finished_at = datetime.now(timezone.utc)
+    
+    db.commit()
+    return {"detail": f"Job {job_id} updated to {update.status}"}
