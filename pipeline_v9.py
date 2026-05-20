@@ -19,7 +19,7 @@ PLUS our minimal visual tweaks for extra safety.
 """
 import os, json, uuid, random, subprocess, time
 
-PIPELINE_VERSION = "9.0-davinci-emulation"
+PIPELINE_VERSION = "9.1-davinci-4k-upscale"
 
 
 def _probe(path):
@@ -46,12 +46,45 @@ def _probe(path):
             "a_rate": a_rate}
 
 
+def _calc_4k_resolution(w, h):
+    """Calculate 4K target resolution matching DaVinci's 3840x2160 timeline.
+    
+    DaVinci scales the video to FIT inside 3840x2160 while keeping aspect ratio.
+    - Vertical 1080x1920 -> scales to 1215x2160 (height fills 2160, width scales)
+    - Horizontal 1920x1080 -> scales to 3840x2160 (width fills 3840, height scales)
+    
+    All dimensions forced to even numbers for H.264 compatibility.
+    """
+    if h > w:
+        # Vertical video: scale height to 2160, width proportionally
+        # But DaVinci timeline is 3840x2160, so for vertical it's 2160x3840
+        target_h = 3840
+        target_w = int(w * target_h / h)
+    else:
+        # Horizontal video: scale width to 3840
+        target_w = 3840
+        target_h = int(h * target_w / w)
+    
+    # Force even dimensions
+    target_w = (target_w // 2) * 2
+    target_h = (target_h // 2) * 2
+    return target_w, target_h
+
+
 def process_video(input_path, output_path, use_nvenc=True):
     info = _probe(input_path)
     w, h, fps = info["w"], info["h"], info["fps"]
     has_audio, duration = info["audio"], info["dur"]
     a_rate = info["a_rate"]
-    print(f"[V9] {w}x{h} @{fps}fps audio={has_audio} dur={duration:.1f}s")
+    
+    # ═══════════════════════════════════════════════════════
+    # THE KEY: Upscale to 4K (DaVinci Timeline Resolution)
+    # This recalculates EVERY PIXEL via Lanczos interpolation,
+    # completely destroying the original spatial hash.
+    # ═══════════════════════════════════════════════════════
+    out_w, out_h = _calc_4k_resolution(w, h)
+    
+    print(f"[V9] {w}x{h} -> 4K UPSCALE {out_w}x{out_h} @{fps}fps audio={has_audio} dur={duration:.1f}s")
 
     # ── Minimal visual tweaks (subtle, won't darken) ──
     zoom = round(random.uniform(1.01, 1.03), 3)
@@ -75,6 +108,7 @@ def process_video(input_path, output_path, use_nvenc=True):
 
     p = {
         "pipeline_version": PIPELINE_VERSION,
+        "upscale": f"{out_w}x{out_h}",
         "zoom": zoom, "speed": speed, "contrast": contrast,
         "saturation": saturation, "hue": hue_shift,
         "trim_start": trim_s, "trim_end": trim_e,
@@ -82,7 +116,7 @@ def process_video(input_path, output_path, use_nvenc=True):
         "original_size": f"{w}x{h}", "fps": fps,
     }
 
-    # ── Video filter (minimal) ──
+    # ── Video filter: crop → UPSCALE TO 4K (lanczos) → color tweak ──
     crop_w = int(w / zoom)
     crop_h = int(h / zoom)
     crop_x = max(0, min(int((w - crop_w) / 2 + dx), w - crop_w))
@@ -90,7 +124,7 @@ def process_video(input_path, output_path, use_nvenc=True):
 
     vf = [
         f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
-        f"scale={w}:{h}",
+        f"scale={out_w}:{out_h}:flags=lanczos",   # ← THE 4K UPSCALE
         f"eq=contrast={contrast}:saturation={saturation}",
     ]
     if hue_shift != 0:
@@ -174,7 +208,7 @@ def process_video(input_path, output_path, use_nvenc=True):
     ])
 
     # ── Execute ──
-    print(f"[V9] DaVinci emulation mode (libx264 + adaptive B-frames + AQ8)")
+    print(f"[V9] DaVinci 4K mode: {w}x{h} -> {out_w}x{out_h} (lanczos upscale)")
     print(f"[V9] Tweaks: zoom={zoom} speed={speed} trim={trim_s}s/{trim_e}s")
     start = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True)
