@@ -15,9 +15,18 @@ from api.auth import get_password_hash, verify_password, create_access_token, ge
 from shared.schemas import UserCreate, UserResponse, Token, JobCreate, JobResponse
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy import text as sa_text
 
 # Configuración Base de datos
 Base.metadata.create_all(bind=engine)
+
+# Migration: add 'mode' column if missing
+try:
+    with engine.connect() as conn:
+        conn.execute(sa_text("ALTER TABLE jobs ADD COLUMN mode VARCHAR DEFAULT 'horizontal_4k'"))
+        conn.commit()
+except Exception:
+    pass  # Column already exists
 
 app = FastAPI(title="Video Uniquifier API")
 
