@@ -122,10 +122,10 @@ def upload_to_r2(job_id: str, file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Video Processing — Pipeline v8.0 (The Nuke: Trim + Audio Masking + Ghost)
+# Video Processing — Pipeline v9.0 (DaVinci Resolve Emulation)
 # ---------------------------------------------------------------------------
 
-from pipeline_v8 import process_video
+from pipeline_v9 import process_video
 
 
 
@@ -231,7 +231,7 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"  VIDEO UNIQUIFIER - Local Worker")
-    print(f"  Pipeline: v8.0 — The Nuke (Trim + Audio Mask + Ghost)")
+    print(f"  Pipeline: v9.0 — DaVinci Resolve Emulation")
     print(f"  GPU: RTX 4090 (NVENC {'ON' if USE_NVENC else 'OFF'})")
     print(f"  API: {API_URL}")
     print(f"  Poll every: {POLL_INTERVAL}s")
