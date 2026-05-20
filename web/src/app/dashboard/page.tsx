@@ -14,6 +14,7 @@ interface Job {
 export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [mode, setMode] = useState<'horizontal_4k' | 'vertical_4k'>('horizontal_4k');
   const router = useRouter();
 
   const fetchJobs = useCallback(async () => {
@@ -61,14 +62,14 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'video/mp4' }
       });
 
-      // 3. Crear Job
+      // 3. Crear Job con modo seleccionado
       await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/jobs`, {
         method: 'POST',
         headers: { 
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ input_key: file_key })
+        body: JSON.stringify({ input_key: file_key, mode })
       });
 
       fetchJobs();
@@ -124,6 +125,51 @@ export default function Dashboard() {
           </button>
         </header>
 
+        {/* Mode Selector */}
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+          <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Modo de Procesamiento</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={() => setMode('horizontal_4k')}
+              className={`p-4 rounded-xl border-2 transition-all text-left ${
+                mode === 'horizontal_4k' 
+                  ? 'border-violet-500 bg-violet-500/10' 
+                  : 'border-slate-700 hover:border-slate-600'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-2xl">📺</span>
+                <span className="font-semibold text-white">Horizontal 4K</span>
+              </div>
+              <p className="text-xs text-slate-400">
+                Convierte a 3840x2160 con fondo blur. Funciona con DaVinci.
+              </p>
+              {mode === 'horizontal_4k' && (
+                <span className="inline-block mt-2 text-xs text-violet-400 font-medium">✓ Seleccionado</span>
+              )}
+            </button>
+            <button
+              onClick={() => setMode('vertical_4k')}
+              className={`p-4 rounded-xl border-2 transition-all text-left ${
+                mode === 'vertical_4k' 
+                  ? 'border-fuchsia-500 bg-fuchsia-500/10' 
+                  : 'border-slate-700 hover:border-slate-600'
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-2xl">📱</span>
+                <span className="font-semibold text-white">Vertical 4K</span>
+              </div>
+              <p className="text-xs text-slate-400">
+                Mantiene vertical (2160x3840) + blur + doble encode. Ideal para TikTok.
+              </p>
+              {mode === 'vertical_4k' && (
+                <span className="inline-block mt-2 text-xs text-fuchsia-400 font-medium">✓ Seleccionado</span>
+              )}
+            </button>
+          </div>
+        </div>
+
         {/* Upload Zone */}
         <div className="bg-slate-900 border-2 border-dashed border-slate-700 rounded-2xl p-12 text-center transition-colors hover:border-violet-500">
           <input 
@@ -143,7 +189,9 @@ export default function Dashboard() {
             <div className="text-lg font-medium">
               {uploading ? 'Subiendo...' : 'Arrastra un video o haz clic aquí'}
             </div>
-            <div className="text-sm text-slate-400">MP4 vertical (1080x1920) recomendado</div>
+            <div className="text-sm text-slate-400">
+              {mode === 'horizontal_4k' ? '📺 Horizontal 4K (3840x2160)' : '📱 Vertical 4K (2160x3840)'}
+            </div>
           </label>
         </div>
 

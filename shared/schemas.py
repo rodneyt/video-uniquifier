@@ -19,11 +19,13 @@ class Token(BaseModel):
 
 class JobCreate(BaseModel):
     input_key: str
+    mode: str = "horizontal_4k"  # "horizontal_4k" or "vertical_4k"
 
 class JobResponse(BaseModel):
     id: str
     user_id: str
     input_key: str
+    mode: str = "horizontal_4k"
     output_key: Optional[str] = None
     status: str
     params_json: Optional[Any] = None

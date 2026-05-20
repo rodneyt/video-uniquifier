@@ -24,6 +24,7 @@ class Job(Base):
     id = Column(String, primary_key=True, default=generate_uuid)
     user_id = Column(String, ForeignKey("users.id"))
     input_key = Column(String)
+    mode = Column(String, default="horizontal_4k")  # horizontal_4k or vertical_4k
     output_key = Column(String, nullable=True)
     status = Column(String, default="queued") # queued, processing, done, failed
     params_json = Column(JSON, nullable=True)

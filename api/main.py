@@ -118,6 +118,7 @@ def create_job(job_in: JobCreate, current_user: User = Depends(get_current_user)
     new_job = Job(
         user_id=current_user.id,
         input_key=job_in.input_key,
+        mode=job_in.mode,
         status="queued"
     )
     db.add(new_job)

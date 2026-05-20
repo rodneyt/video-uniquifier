@@ -122,10 +122,20 @@ def upload_to_r2(job_id: str, file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Video Processing — Pipeline v9.0 (DaVinci Resolve Emulation)
+# Video Processing -- Pipeline selection by mode
 # ---------------------------------------------------------------------------
 
-from pipeline_v9 import process_video
+from pipeline_v9 import process_video as process_horizontal_4k
+from pipeline_v10 import process_video as process_vertical_4k
+
+def process_video_by_mode(input_path, output_path, mode="horizontal_4k", use_nvenc=True):
+    """Select pipeline based on job mode."""
+    if mode == "vertical_4k":
+        print("[WORKER] Mode: VERTICAL 4K (A+B+C combined)")
+        return process_vertical_4k(input_path, output_path, use_nvenc=use_nvenc)
+    else:
+        print("[WORKER] Mode: HORIZONTAL 4K (DaVinci)")
+        return process_horizontal_4k(input_path, output_path, use_nvenc=use_nvenc)
 
 
 
@@ -174,6 +184,8 @@ def process_job(job: dict):
     print(f"\n{'='*60}")
     print(f"  JOB: {job_id}")
     print(f"  Input: {job['input_key']}")
+    job_mode = job.get("mode", "horizontal_4k")
+    print(f"  Mode: {job_mode}")
     print(f"{'='*60}")
     
     input_path = os.path.join(TEMP_DIR, f"in_{job_id}.mp4")
@@ -186,8 +198,8 @@ def process_job(job: dict):
         # 1. Download via presigned URL
         download_from_r2(job_id, input_path)
         
-        # 2. Process with FFmpeg Pipeline v2.0
-        params = process_video(input_path, output_path, use_nvenc=USE_NVENC)
+        # 2. Process with selected pipeline
+        params = process_video_by_mode(input_path, output_path, mode=job_mode, use_nvenc=USE_NVENC)
         
         # 3. Verify output
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
