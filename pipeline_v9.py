@@ -126,36 +126,51 @@ def process_video(input_path, output_path, use_nvenc=True):
         "original_size": f"{w}x{h}", "fps": fps,
     }
 
-    # ── Video filter: crop -> scale to fit 3840x2160 -> pad (DaVinci exact) ──
+    # ── Video filter: blurred background + foreground overlay (like TikTok repost style) ──
     crop_w = int(w / zoom)
     crop_h = int(h / zoom)
     crop_x = max(0, min(int((w - crop_w) / 2 + dx), w - crop_w))
     crop_y = max(0, min(int((h - crop_h) / 2 + dy), h - crop_h))
 
-    # DaVinci fit: scale to fit INSIDE 3840x2160, then pad black
+    # DaVinci fit: scale to fit INSIDE 3840x2160
     scaled_w, scaled_h, pad_x, pad_y = _build_fit_filter(w, h, out_w, out_h)
+    
+    blur_sigma = random.randint(35, 50)
 
-    vf = [
-        f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
-        f"scale={scaled_w}:{scaled_h}:flags=lanczos",   # Scale to fit
-        f"pad={out_w}:{out_h}:{pad_x}:{pad_y}:black",   # Pad to exact 3840x2160
-        f"eq=contrast={contrast}:saturation={saturation}",
+    # filter_complex: two paths from same input
+    # Path 1 (BG): stretch to fill 3840x2160, heavy gaussian blur
+    # Path 2 (FG): crop+zoom, scale to fit, overlay centered on blurred BG
+    fc_parts = [
+        # Background: scale to FILL (crop excess), then blur
+        f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+        f"crop={out_w}:{out_h},"
+        f"gblur=sigma={blur_sigma},"
+        f"eq=brightness=-0.03"  # slightly darker BG so foreground pops
+        f"[bg]",
+        
+        # Foreground: apply our tweaks, scale to fit
+        f"[0:v]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+        f"scale={scaled_w}:{scaled_h}:flags=lanczos,"
+        f"eq=contrast={contrast}:saturation={saturation}"
+        + (f",hue=h={hue_shift}" if hue_shift != 0 else "")
+        + f"[fg]",
+        
+        # Overlay foreground centered on blurred background
+        f"[bg][fg]overlay={pad_x}:{pad_y},"
+        f"setpts=PTS/{speed}"
+        f"[v_final]",
     ]
-    if hue_shift != 0:
-        vf.append(f"hue=h={hue_shift}")
-    vf.append(f"setpts=PTS/{speed}")
+    
+    fc = ";".join(fc_parts)
 
-    vf_str = ",".join(vf)
-
-    # ── Audio filter (minimal) ──
-    af_str = ""
+    # ── Audio filter ──
     if has_audio:
         af_parts = [
             f"atempo={speed:.3f}",
             f"asetrate={pitch_rate}",
             f"aresample={a_rate}",
         ]
-        af_str = ",".join(af_parts)
+        fc += f";[0:a]{','.join(af_parts)}[a_final]"
 
     # ── Build FFmpeg command — DaVinci Resolve emulation ──
     title = f"clip-{uuid.uuid4().hex[:8]}"
@@ -168,12 +183,10 @@ def process_video(input_path, output_path, use_nvenc=True):
     if trimmed_dur > 1 and trim_e > 0:
         cmd.extend(["-t", str(trimmed_dur)])
 
-    # Video filter
-    cmd.extend(["-vf", vf_str])
-
-    # Audio filter
-    if has_audio and af_str:
-        cmd.extend(["-af", af_str])
+    # Use filter_complex instead of -vf/-af
+    cmd.extend(["-filter_complex", fc, "-map", "[v_final]"])
+    if has_audio:
+        cmd.extend(["-map", "[a_final]"])
 
     # ═══════════════════════════════════════════════════════
     # DaVinci Resolve H.264 Encoder Settings (EXACT MATCH)
