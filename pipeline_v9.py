@@ -47,28 +47,38 @@ def _probe(path):
 
 
 def _calc_4k_resolution(w, h):
-    """Calculate 4K target resolution matching DaVinci's 3840x2160 timeline.
+    """Match DaVinci Resolve's 3840x2160 Timeline Resolution EXACTLY.
     
-    DaVinci scales the video to FIT inside 3840x2160 while keeping aspect ratio.
-    - Vertical 1080x1920 -> scales to 1215x2160 (height fills 2160, width scales)
-    - Horizontal 1920x1080 -> scales to 3840x2160 (width fills 3840, height scales)
+    DaVinci with 'Use vertical resolution' UNCHECKED always outputs 3840x2160.
+    - Vertical 720x1280 -> scaled to fit inside 3840x2160, pillarboxed
+    - Horizontal 1920x1080 -> scaled to fill 3840x2160
     
-    All dimensions forced to even numbers for H.264 compatibility.
+    Returns: (3840, 2160) always — the video is scaled+padded to fit.
     """
-    if h > w:
-        # Vertical video: scale height to 2160, width proportionally
-        # But DaVinci timeline is 3840x2160, so for vertical it's 2160x3840
-        target_h = 3840
-        target_w = int(w * target_h / h)
-    else:
-        # Horizontal video: scale width to 3840
-        target_w = 3840
-        target_h = int(h * target_w / w)
+    return 3840, 2160
+
+
+def _build_fit_filter(w, h, target_w=3840, target_h=2160):
+    """Build FFmpeg filter to fit video into target resolution like DaVinci.
     
-    # Force even dimensions
-    target_w = (target_w // 2) * 2
-    target_h = (target_h // 2) * 2
-    return target_w, target_h
+    Scales the video to fit INSIDE target while keeping aspect ratio,
+    then pads with black to fill the full target resolution.
+    """
+    # Calculate scaled size keeping aspect ratio
+    scale_by_w = target_w / w
+    scale_by_h = target_h / h
+    scale_factor = min(scale_by_w, scale_by_h)
+    
+    scaled_w = int(w * scale_factor)
+    scaled_h = int(h * scale_factor)
+    # Force even
+    scaled_w = (scaled_w // 2) * 2
+    scaled_h = (scaled_h // 2) * 2
+    
+    pad_x = (target_w - scaled_w) // 2
+    pad_y = (target_h - scaled_h) // 2
+    
+    return scaled_w, scaled_h, pad_x, pad_y
 
 
 def process_video(input_path, output_path, use_nvenc=True):
@@ -116,15 +126,19 @@ def process_video(input_path, output_path, use_nvenc=True):
         "original_size": f"{w}x{h}", "fps": fps,
     }
 
-    # ── Video filter: crop → UPSCALE TO 4K (lanczos) → color tweak ──
+    # ── Video filter: crop -> scale to fit 3840x2160 -> pad (DaVinci exact) ──
     crop_w = int(w / zoom)
     crop_h = int(h / zoom)
     crop_x = max(0, min(int((w - crop_w) / 2 + dx), w - crop_w))
     crop_y = max(0, min(int((h - crop_h) / 2 + dy), h - crop_h))
 
+    # DaVinci fit: scale to fit INSIDE 3840x2160, then pad black
+    scaled_w, scaled_h, pad_x, pad_y = _build_fit_filter(w, h, out_w, out_h)
+
     vf = [
         f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}",
-        f"scale={out_w}:{out_h}:flags=lanczos",   # ← THE 4K UPSCALE
+        f"scale={scaled_w}:{scaled_h}:flags=lanczos",   # Scale to fit
+        f"pad={out_w}:{out_h}:{pad_x}:{pad_y}:black",   # Pad to exact 3840x2160
         f"eq=contrast={contrast}:saturation={saturation}",
     ]
     if hue_shift != 0:
