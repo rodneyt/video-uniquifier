@@ -14,7 +14,6 @@ interface Job {
 export default function Dashboard() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [mode, setMode] = useState<'horizontal_4k' | 'vertical_4k'>('horizontal_4k');
   const router = useRouter();
 
   const fetchJobs = useCallback(async () => {
@@ -36,7 +35,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchJobs();
-    const interval = setInterval(fetchJobs, 5000); // Polling
+    const interval = setInterval(fetchJobs, 5000);
     return () => clearInterval(interval);
   }, [fetchJobs]);
 
@@ -48,28 +47,25 @@ export default function Dashboard() {
     const token = localStorage.getItem('token');
     
     try {
-      // 1. Obtener Presigned URL
       const preRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/uploads/presign`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` }
       });
       const { upload_url, file_key } = await preRes.json();
 
-      // 2. Subir directamente a R2
       await fetch(upload_url, {
         method: 'PUT',
         body: file,
         headers: { 'Content-Type': 'video/mp4' }
       });
 
-      // 3. Crear Job con modo seleccionado
       await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/jobs`, {
         method: 'POST',
         headers: { 
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ input_key: file_key, mode })
+        body: JSON.stringify({ input_key: file_key })
       });
 
       fetchJobs();
@@ -125,51 +121,6 @@ export default function Dashboard() {
           </button>
         </header>
 
-        {/* Mode Selector */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Modo de Procesamiento</h3>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => setMode('horizontal_4k')}
-              className={`p-4 rounded-xl border-2 transition-all text-left ${
-                mode === 'horizontal_4k' 
-                  ? 'border-violet-500 bg-violet-500/10' 
-                  : 'border-slate-700 hover:border-slate-600'
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">📺</span>
-                <span className="font-semibold text-white">Horizontal 4K</span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Convierte a 3840x2160 con fondo blur. Funciona con DaVinci.
-              </p>
-              {mode === 'horizontal_4k' && (
-                <span className="inline-block mt-2 text-xs text-violet-400 font-medium">✓ Seleccionado</span>
-              )}
-            </button>
-            <button
-              onClick={() => setMode('vertical_4k')}
-              className={`p-4 rounded-xl border-2 transition-all text-left ${
-                mode === 'vertical_4k' 
-                  ? 'border-fuchsia-500 bg-fuchsia-500/10' 
-                  : 'border-slate-700 hover:border-slate-600'
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-2xl">📱</span>
-                <span className="font-semibold text-white">Vertical 4K</span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Mantiene vertical (2160x3840) + blur + doble encode. Ideal para TikTok.
-              </p>
-              {mode === 'vertical_4k' && (
-                <span className="inline-block mt-2 text-xs text-fuchsia-400 font-medium">✓ Seleccionado</span>
-              )}
-            </button>
-          </div>
-        </div>
-
         {/* Upload Zone */}
         <div className="bg-slate-900 border-2 border-dashed border-slate-700 rounded-2xl p-12 text-center transition-colors hover:border-violet-500">
           <input 
@@ -189,9 +140,7 @@ export default function Dashboard() {
             <div className="text-lg font-medium">
               {uploading ? 'Subiendo...' : 'Arrastra un video o haz clic aquí'}
             </div>
-            <div className="text-sm text-slate-400">
-              {mode === 'horizontal_4k' ? '📺 Horizontal 4K (3840x2160)' : '📱 Vertical 4K (2160x3840)'}
-            </div>
+            <div className="text-sm text-slate-400">Output: 3840x2160 con fondo blur (bypass confirmado)</div>
           </label>
         </div>
 
