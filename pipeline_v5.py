@@ -2,8 +2,8 @@
 import os, json, uuid, random, subprocess, time, math
 
 PIPELINE_VERSION = "5.0-pro-look"
-FONT_PATH = "C:/Windows/Fonts/arialbd.ttf"
-FONT_OK = os.path.exists(FONT_PATH.replace("/", os.sep))
+FONT_WIN = "C:\\Windows\\Fonts\\arialbd.ttf"
+FONT_OK = os.path.exists(FONT_WIN)
 
 COLOR_GRADES = {
     "teal_orange": {"rs": -0.05, "gs": -0.02, "bs": 0.10, "rh": 0.10, "gh": 0.05, "bh": -0.10},
@@ -80,8 +80,8 @@ def process_video(input_path, output_path, use_nvenc=True):
 
     # ── Inset params ──
     inset_scale = round(random.uniform(0.90, 0.94), 3) if do_inset else 1.0
-    inset_w = int(w * inset_scale) if do_inset else w
-    inset_h = int(h * inset_scale) if do_inset else h
+    inset_w = (int(w * inset_scale) // 2) * 2 if do_inset else w  # even
+    inset_h = (int(h * inset_scale) // 2) * 2 if do_inset else h  # even
     pad_x = (w - inset_w) // 2
     pad_y = (h - inset_h) // 2
 
@@ -156,8 +156,7 @@ def process_video(input_path, output_path, use_nvenc=True):
 
     if do_watermark:
         uname = random.choice(USERNAMES) + str(random.randint(10, 99))
-        font_esc = FONT_PATH.replace(":", "\\:")
-        vf.append(f"drawtext=fontfile={font_esc}:text='{uname}'"
+        vf.append(f"drawtext=fontfile='C\\\\:/Windows/Fonts/arialbd.ttf':text='{uname}'"
                   f":fontsize=26:fontcolor=white@0.55:x=w-tw-25:y=h-th-65")
 
     vf.append(f"setpts=PTS/{speed}")
@@ -188,13 +187,15 @@ def process_video(input_path, output_path, use_nvenc=True):
     cmd.extend(["-filter_complex", fc, "-map", "[v_final]"])
     if has_audio: cmd.extend(["-map", "[a_final]"])
 
+    nvenc_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+                  "-cq", "20", "-profile:v", "high", "-pix_fmt", "yuv420p"]
+    cpu_args = ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                "-profile:v", "high", "-pix_fmt", "yuv420p"]
     if use_nvenc:
-        cmd.extend(["-c:v", "h264_nvenc", "-preset", "p6", "-rc", "vbr",
-                     "-cq", "18", "-b:v", "10M", "-profile:v", "high", "-pix_fmt", "yuv420p"])
+        cmd.extend(nvenc_args)
         p["encoder"] = "nvenc"
     else:
-        cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                     "-profile:v", "high", "-pix_fmt", "yuv420p"])
+        cmd.extend(cpu_args)
         p["encoder"] = "x264"
 
     if has_audio: cmd.extend(["-c:a", "aac", "-b:a", "192k"])
@@ -209,18 +210,29 @@ def process_video(input_path, output_path, use_nvenc=True):
     elapsed = round(time.time() - start, 1)
 
     if result.returncode != 0:
+        err = result.stderr[-600:] if result.stderr else "unknown"
         if use_nvenc:
-            print("[V5] NVENC failed, CPU fallback...")
-            for i, c in enumerate(cmd):
-                if c == "h264_nvenc": cmd[i] = "libx264"
-                if c == "p6": cmd[i] = "medium"
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            print(f"[V5] NVENC failed, CPU fallback...")
+            # Rebuild command with CPU encoder
+            cmd2 = [c for c in cmd]
+            # Find nvenc args and swap
+            for i in range(len(cmd2)):
+                if cmd2[i] == "h264_nvenc": cmd2[i] = "libx264"
+                elif cmd2[i] == "p4": cmd2[i] = "medium"
+                elif cmd2[i] == "vbr":
+                    cmd2[i-1] = "-crf"
+                    cmd2[i] = "20"
+                elif cmd2[i] == "-cq": cmd2[i] = "-qp"
+            # Remove -b:v and its value
+            cmd2 = [c for j, c in enumerate(cmd2)
+                    if c != "-b:v" and (j == 0 or cmd2[j-1] != "-b:v")]
+            result = subprocess.run(cmd2, capture_output=True, text=True)
             elapsed = round(time.time() - start, 1)
             p["encoder"] = "x264_fallback"
             if result.returncode != 0:
-                raise Exception(f"FFmpeg failed: {result.stderr[-500:]}")
+                raise Exception(f"FFmpeg CPU failed: {result.stderr[-500:]}")
         else:
-            raise Exception(f"FFmpeg failed: {result.stderr[-500:]}")
+            raise Exception(f"FFmpeg failed: {err}")
 
     out_mb = os.path.getsize(output_path) / 1024 / 1024
     print(f"[V5] Done in {elapsed}s — {out_mb:.1f} MB")
