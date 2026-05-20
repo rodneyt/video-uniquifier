@@ -122,10 +122,10 @@ def upload_to_r2(job_id: str, file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Video Processing — Pipeline v6.0 (Simplified Core + Particles)
+# Video Processing — Pipeline v7.0 (Ultimate Evasion: Particles + Ghost Overlay)
 # ---------------------------------------------------------------------------
 
-from pipeline_v6 import process_video
+from pipeline_v7 import process_video
 
 
 
@@ -231,7 +231,7 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"  VIDEO UNIQUIFIER - Local Worker")
-    print(f"  Pipeline: v6.0 — Core + Particles")
+    print(f"  Pipeline: v7.0 — Ultimate Evasion (Ghost+PIP Overlay)")
     print(f"  GPU: RTX 4090 (NVENC {'ON' if USE_NVENC else 'OFF'})")
     print(f"  API: {API_URL}")
     print(f"  Poll every: {POLL_INTERVAL}s")
